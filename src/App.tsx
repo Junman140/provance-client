@@ -1,16 +1,25 @@
 import './App.css';
+import { lazy, Suspense, type ReactNode } from 'react';
 import { createBrowserRouter, RouterProvider, Navigate } from 'react-router';
 import LandingPage from './pages/LandingPage';
 import AuthModalRoute from './pages/AuthModalRoute';
 import AppLayout from './layouts/AppLayout';
-import AppHomePage from './pages/app/AppHomePage';
-import AgentsPage from './pages/app/AgentsPage';
-import WalletPage from './pages/app/WalletPage';
-import WorkflowEditorPage from './pages/app/WorkflowEditorPage';
+const AppHomePage = lazy(() => import('./pages/app/AppHomePage'));
+const AgentsPage = lazy(() => import('./pages/app/AgentsPage'));
+const WalletPage = lazy(() => import('./pages/app/WalletPage'));
+const WorkflowEditorPage = lazy(() => import('./pages/app/WorkflowEditorPage'));
 import DocsLayout from './layouts/DocsLayout';
 import DocSlugPage from './pages/docs/DocSlugPage';
 import { Toaster } from 'react-hot-toast';
 import { workflowsLoader, workflowEditorLoader, agentsLoader, authLoader } from './utils/loaders.utils';
+
+function LazyPage({ children }: { children: ReactNode }) {
+	return (
+		<Suspense fallback={<div className="px-6 py-10 text-[12px] text-white/40">Loading…</div>}>
+			{children}
+		</Suspense>
+	);
+}
 
 const router = createBrowserRouter([
 	{
@@ -27,12 +36,12 @@ const router = createBrowserRouter([
 		children: [
 			{
 				index: true,
-				element: <AppHomePage />,
+				element: <LazyPage><AppHomePage /></LazyPage>,
 				loader: workflowsLoader,
 			},
-			{ path: 'agents', element: <AgentsPage />, loader: agentsLoader },
-			{ path: 'wallet', element: <WalletPage /> },
-			{ path: 'workflows/:id', element: <WorkflowEditorPage />, loader: workflowEditorLoader },
+			{ path: 'agents', element: <LazyPage><AgentsPage /></LazyPage>, loader: agentsLoader },
+			{ path: 'wallet', element: <LazyPage><WalletPage /></LazyPage> },
+			{ path: 'workflows/:id', element: <LazyPage><WorkflowEditorPage /></LazyPage>, loader: workflowEditorLoader },
 		],
 	},
 	{
