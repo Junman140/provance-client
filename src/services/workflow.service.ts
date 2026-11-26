@@ -111,10 +111,73 @@ export interface WorkflowSchedule {
    enabled: boolean;
    payload: Record<string, unknown>;
    max_attempts: number;
+   interval_seconds: number | null;
+   fee_stroops: number | null;
+   end_at: string | null;
+   max_runs: number;
+   runs_count: number;
+   period_seconds: number;
+   period_cap_stroops: number;
+   period_start: string | null;
+   period_spent_stroops: number;
+   funding_mode: 'allowance';
+   allowance_cap_stroops: number;
+   allowance_expires_at: string | null;
+   contract_version: number;
+   contract_job_id: number | null;
+   commitment_hash: string | null;
+   commitment_tx: string | null;
+   last_error: string | null;
    last_run_at: string | null;
    next_run_at: string | null;
    created_at: string;
 }
+
+/** Step 1 of the "sign once" setup: the owner's allowance approval, plus the
+ * exact job numbers needed to build the create transaction in step 3 once
+ * that approval is confirmed on-chain. */
+export interface ScheduleDraft {
+   approvalXdr: string;
+   approvalExpiresLedger: number;
+   commitmentHash: string;
+   nextRun: number;
+   nextRunAt: string;
+   intervalSeconds: number;
+   feeStroops: string;
+   endAt: number | null;
+   maxRuns: number;
+   periodSeconds: number;
+   periodCapStroops: string;
+   allowanceCapStroops: string;
+   allowanceExpiresAt: number;
+   contractId: string;
+   networkPassphrase: string;
+}
+
+/** Step 3 result: the unsigned job-creation transaction. */
+export interface ScheduleCreateTx {
+   xdr: string;
+   contractId: string;
+   networkPassphrase: string;
+}
+
+export interface CreateScheduleInput {
+   name?: string;
+   cron: string;
+   timezone?: string;
+   payload?: Record<string, unknown>;
+   maxAttempts?: number;
+   ownerPublicKey: string;
+   feeStroops?: string;
+   endAt?: number;
+   maxRuns?: number;
+   periodSeconds?: number;
+   periodCapStroops?: string;
+   allowanceCapStroops?: string;
+   allowanceExpiresAt?: number;
+}
+
+export type ScheduleAction = 'cancel' | 'pause' | 'resume' | 'set_limits';
 
 export interface WorkflowTrigger {
    id: string;
@@ -236,18 +299,117 @@ class WorkflowService extends BaseApiService {
       return res.data.schedules;
    }
 
-   async createSchedule(workflowId: string, input: {
-      name?: string;
-      cron: string;
-      timezone?: string;
-      enabled?: boolean;
-   }): Promise<WorkflowSchedule> {
-      const res = await this.api.post<{ schedule: WorkflowSchedule }>(`/workflows/${workflowId}/schedules`, input);
-      return res.data.schedule;
+   /** Step 1: build the allowance approval transaction. */
+   async buildSchedule(workflowId: string, input: CreateScheduleInput): Promise<ScheduleDraft> {
+      try {
+         const res = await this.api.post<{ draft: ScheduleDraft }>(`/workflows/${workflowId}/schedules`, input);
+         return res.data.draft;
+      } catch (error) {
+         throw this.handleError(error);
+      }
    }
 
-   async deleteSchedule(workflowId: string, scheduleId: string): Promise<void> {
-      await this.api.delete(`/workflows/${workflowId}/schedules/${scheduleId}`);
+   /** Step 2: submit the signed allowance approval from step 1. */
+   async submitAllowanceApproval(workflowId: string, xdr: string): Promise<{ txHash: string }> {
+      try {
+         const res = await this.api.post<{ txHash: string }>(
+            `/workflows/${workflowId}/schedules/approve`,
+            { xdr },
+         );
+         return res.data;
+      } catch (error) {
+         throw this.handleError(error);
+      }
+   }
+
+   /** Step 3: now that the allowance is live, build the job-creation transaction. */
+   async buildScheduleCreate(workflowId: string, input: {
+      ownerPublicKey: string;
+      commitmentHash: string;
+      nextRun: number;
+      intervalSeconds: number;
+      feeStroops: string;
+      endAt?: number;
+      maxRuns?: number;
+      periodSeconds?: number;
+      periodCapStroops?: string;
+      allowanceExpiresAt: number;
+   }): Promise<ScheduleCreateTx> {
+      try {
+         const res = await this.api.post<ScheduleCreateTx>(
+            `/workflows/${workflowId}/schedules/create`,
+            input,
+         );
+         return res.data;
+      } catch (error) {
+         throw this.handleError(error);
+      }
+   }
+
+   /** Step 4: submit the signed create transaction and persist the schedule. */
+   async confirmSchedule(workflowId: string, input: {
+      xdr: string;
+      commitmentHash: string;
+      ownerPublicKey: string;
+      name: string;
+      cron: string;
+      timezone: string;
+      payload: Record<string, unknown>;
+      maxAttempts: number;
+      endAt?: number;
+      maxRuns?: number;
+      periodSeconds?: number;
+      periodCapStroops?: string;
+      allowanceCapStroops?: string;
+      allowanceExpiresAt?: number;
+   }): Promise<WorkflowSchedule> {
+      try {
+         const res = await this.api.post<{ schedule: WorkflowSchedule }>(
+            `/workflows/${workflowId}/schedules/confirm`,
+            input,
+         );
+         return res.data.schedule;
+      } catch (error) {
+         throw this.handleError(error);
+      }
+   }
+
+   async buildScheduleAction(workflowId: string, scheduleId: string, input: {
+      action: ScheduleAction;
+      ownerPublicKey: string;
+      endAt?: number;
+      maxRuns?: number;
+      periodSeconds?: number;
+      periodCapStroops?: string;
+   }): Promise<string> {
+      try {
+         const res = await this.api.post<{ xdr: string }>(
+            `/workflows/${workflowId}/schedules/${scheduleId}/action`,
+            input,
+         );
+         return res.data.xdr;
+      } catch (error) {
+         throw this.handleError(error);
+      }
+   }
+
+   async confirmScheduleAction(workflowId: string, scheduleId: string, input: {
+      xdr: string;
+      action: ScheduleAction;
+      endAt?: number;
+      maxRuns?: number;
+      periodSeconds?: number;
+      periodCapStroops?: string;
+   }): Promise<{ schedule?: WorkflowSchedule; cancelled?: boolean; txHash: string }> {
+      try {
+         const res = await this.api.post<{ schedule?: WorkflowSchedule; cancelled?: boolean; txHash: string }>(
+            `/workflows/${workflowId}/schedules/${scheduleId}/action/confirm`,
+            input,
+         );
+         return res.data;
+      } catch (error) {
+         throw this.handleError(error);
+      }
    }
 
    async getTriggers(workflowId: string): Promise<WorkflowTrigger[]> {
